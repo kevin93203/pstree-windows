@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      TARGET: x86_64-pc-windows-msvc
+      ASSET_NAME: pstree-x86_64-pc-windows-msvc.zip
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Validate package version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $packageVersion = $metadata.packages[0].version
+          $tagVersion = $env:RELEASE_TAG.TrimStart("v")
+          if ($packageVersion -ne $tagVersion) {
+            throw "Git tag $env:RELEASE_TAG does not match Cargo package version $packageVersion."
+          }
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release --target $env:TARGET
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP "pstree-dist"
+          $archive = Join-Path $env:RUNNER_TEMP $env:ASSET_NAME
+          $checksums = Join-Path $env:RUNNER_TEMP "SHA256SUMS"
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          Copy-Item "target\$env:TARGET\release\pstree.exe" "$dist\pstree.exe"
+          Compress-Archive -Path "$dist\pstree.exe" -DestinationPath $archive -Force
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $env:ASSET_NAME" | Set-Content -Path $checksums -Encoding ascii
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:RELEASE_TAG `
+            "$env:RUNNER_TEMP\$env:ASSET_NAME" `
+            "$env:RUNNER_TEMP\SHA256SUMS" `
+            "install.ps1" `
+            --title "pstree-windows $env:RELEASE_TAG" `
+            --generate-notes
+
+      - name: Smoke test installer
+        shell: pwsh
+        run: |
+          $smokeDir = Join-Path $env:RUNNER_TEMP "pstree-smoke"
+          & .\install.ps1 -Version $env:RELEASE_TAG -InstallDir $smokeDir -NoModifyPath
+          $version = (& "$smokeDir\pstree.exe" --version).Trim()
+          $expected = "pstree-windows $($env:RELEASE_TAG.TrimStart("v"))"
+          if ($version -ne $expected) {
+            throw "Installer smoke test returned '$version'; expected '$expected'."
+          }

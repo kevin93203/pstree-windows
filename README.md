@@ -2,6 +2,44 @@
 
 A small Windows process-tree viewer written in Rust.
 
+## Install
+
+On Windows x64, install the latest release with PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/kevin93203/pstree-windows/releases/latest/download/install.ps1 | iex"
+```
+
+The installer downloads the verified release archive, installs `pstree.exe`
+to `%LOCALAPPDATA%\pstree\bin`, and adds that directory to the current user's
+`PATH`. Restart the terminal after installation, then run:
+
+```powershell
+pstree --version
+```
+
+To pin a release, set `PSTREE_VERSION` in the same PowerShell process:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "$env:PSTREE_VERSION='v0.1.0'; irm https://github.com/kevin93203/pstree-windows/releases/latest/download/install.ps1 | iex"
+```
+
+The script can also be downloaded and inspected before execution:
+
+```powershell
+irm https://github.com/kevin93203/pstree-windows/releases/latest/download/install.ps1 -OutFile install.ps1
+.\install.ps1
+```
+
+To publish a release, update the version in `Cargo.toml`, commit the change,
+then push a matching tag. GitHub Actions builds and publishes the release
+artifacts automatically:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## Usage
 
 ```text
