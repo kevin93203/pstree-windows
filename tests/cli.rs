@@ -51,15 +51,15 @@ fn invalid_and_conflicting_options_exit_with_usage_error() {
 fn deferred_and_unsupported_options_never_succeed_silently() {
     for args in [
         &["-h"][..],
-        &["-pn"][..],
-        &["--show-pids"][..],
+        &["-s"][..],
         &["-a"][..],
         &["--color=age"][..],
         &["-H"][..],
         &["--ns-sort=pid"][..],
     ] {
         let output = assert_status(args, 2);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("not supported"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("not supported") || stderr.contains("requires a PID"));
         assert!(output.stdout.is_empty());
     }
 }

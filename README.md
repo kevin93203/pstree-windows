@@ -15,29 +15,57 @@ Implemented options:
 -U, --unicode     use Unicode tree-drawing characters
 -?, --help        show help
 -V, --version     show version information
+-p, --show-pids   show process and thread IDs
+-n, --numeric-sort
+                   sort processes by PID
+-c, --compact-not disable process and thread compaction
+-s, --show-parents
+                   show parents of a selected PID
+-t, --thread-names query full thread names
+-T, --hide-threads
+                   hide thread pseudo-children
 ```
 
-The Linux-compatible options `-h`, `-p`, `-n`, `-c`, `-s`, `-t`, and `-T`
-are recognized as part of the CLI contract but currently return exit code `2`
-with an explicit not-supported message. Other Linux-only options are rejected
-the same way; no unsupported option is silently ignored. Use `--` before a
-PID when needed.
+The options `-p`, `-n`, `-c`, `-s`, `-t`, and `-T` are implemented for the
+Windows process/thread tree. `-s` requires a PID. By default, identical process
+subtrees and adjacent named threads are compacted. `-c` disables both forms of
+compaction. `-p` also disables both forms so every process and thread ID remains
+distinguishable. Use `--` before a PID when needed.
+
+`-h` and other Linux-only metadata options are recognized or rejected with
+exit code `2`; no unsupported option is silently ignored.
 
 Without a PID, the program prints every top-level process and its descendants.
-With a PID, it prints only that process and its descendants. Each process is
-shown as `name(PID)` and child processes are sorted by PID.
+With a PID, it prints only that process and its descendants. Process IDs are
+hidden by default and enabled with `-p`. Processes are sorted by name by
+default, or by PID with `-n`.
+
+The tree follows Linux `pstree`'s horizontal layout: the parent and first child
+share a line, while later siblings are printed on aligned lines. For example:
+
+```text
+root-+-child-a
+     |-child-b
+     `-child-c
+```
+
+Unicode output uses the equivalent `─┬─`, `├─`, and `└─` branch characters.
+
+Threads are shown by default and use the owning process name in braces, so
+identical thread names are compacted like Linux `pstree`. `-t` queries full
+Windows thread descriptions; failed or unavailable descriptions fall back to
+the owning process name. With `-p`, named threads use `{Name}(n)`, and
+thread grouping is disabled so each TID remains visible.
 
 Interactive Windows consoles use Unicode tree characters by default. Redirected
 output uses ASCII characters by default. Use `--ascii` or `--unicode` to force
 a style.
 
-P0 establishes the CLI contract only. The current renderer still uses the v1
-output format; PID display, name sorting, thread output, and subtree compaction
-will be implemented in later phases.
-
-The v1 collector uses the Win32 Toolhelp32 process snapshot API and does not
-require administrator privileges. It intentionally does not show command lines,
-paths, users, threads, or live updates.
+The collector uses one Win32 Toolhelp32 snapshot for processes and threads and
+does not require administrator privileges. Thread descriptions are best effort;
+permission failures or threads that exit during collection fall back to the
+owning process name. Use `-p` when the TID must remain visible.
+The tool does not show command lines, paths, users, or live updates.
 
 Exit codes are `0` for help, version, or successful output, `1` for runtime or
 process lookup failures, and `2` for invalid, unsupported, or deferred options.

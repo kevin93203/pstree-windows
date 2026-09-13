@@ -6,10 +6,10 @@ use std::process;
 use std::io::{self, IsTerminal, Write};
 
 #[cfg(windows)]
-use pstree_windows::{GlyphSet, ProcessTree, RenderError, collect_processes};
+use pstree_windows::{GlyphSet, ProcessTree, RenderError, RenderOptions, collect_snapshot};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const HELP: &str = "Usage: pstree.exe [OPTION]... [PID]\n\nDisplay the Windows process tree.\n\nImplemented options:\n  -A, --ascii                 use ASCII tree-drawing characters\n  -U, --unicode               use Unicode tree-drawing characters\n  -?, --help                  show this help\n  -V, --version               show version information\n\nRecognized for later releases (currently exits with status 2):\n  -h, --highlight-all         highlight the current process and ancestors\n  -p, --show-pids             show process IDs\n  -n, --numeric-sort          sort by PID\n  -c, --compact-not           disable process subtree compaction\n  -s, --show-parents          show parents of the selected process\n  -t, --thread-names          show thread names\n  -T, --hide-threads          hide threads\n\nUnsupported on Windows for now:\n  -a, --arguments             show command-line arguments\n  -l, --long                  do not truncate lines\n  -P, --show-paths             show full executable paths\n  -C, --color=TYPE             color processes by age\n  -H, --highlight-pid=PID      highlight a selected process\n  -g, -k, -N, -S, -u, -Z       Linux-only process metadata options\n\nWithout PID, all top-level process trees are shown. With PID, only that\nprocess and its descendants are shown.\n\nExit status:\n  0  success\n  1  runtime or process lookup failure\n  2  invalid, unsupported, or deferred CLI option\n";
+const HELP: &str = "Usage: pstree.exe [OPTION]... [PID]\n\nDisplay the Windows process tree.\n\nImplemented options:\n  -A, --ascii                 use ASCII tree-drawing characters\n  -U, --unicode               use Unicode tree-drawing characters\n  -?, --help                  show this help\n  -V, --version               show version information\n  -p, --show-pids             show process and thread IDs\n  -n, --numeric-sort          sort processes by PID\n  -c, --compact-not           disable process and thread compaction\n  -s, --show-parents          show parents of a selected PID\n  -t, --thread-names          query full thread names\n  -T, --hide-threads          hide thread pseudo-children\n\nDeferred or unsupported on Windows for now:\n  -h, --highlight-all         highlight the current process and ancestors\n  -a, --arguments             show command-line arguments\n  -l, --long                  do not truncate lines\n  -P, --show-paths            show full executable paths\n  -C, --color=TYPE            color processes by age\n  -H, --highlight-pid=PID     highlight a selected process\n  -g, -k, -N, -S, -u, -Z      Linux-only process metadata options\n\nWithout PID, all top-level process trees are shown. With PID, only that\nprocess and its descendants are shown. Threads are shown by default; use -T\nto hide them. Default thread labels use the owning process name; -t queries\nfull Windows thread descriptions and falls back to that process name.\n-s requires a PID. Process and thread IDs are hidden by default. The default\noutput compacts identical process subtrees and named threads; -c disables both\nforms of compaction, while -p also disables both forms. The parent and first\nchild share a line, while later siblings use aligned branch lines, matching\nLinux pstree's horizontal tree layout.\n\nExit status:\n  0  success\n  1  runtime or process lookup failure\n  2  invalid, unsupported, or deferred CLI option\n";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GlyphMode {
@@ -54,25 +54,6 @@ impl CliOptions {
         if self.highlight_all {
             options.push("-h/--highlight-all");
         }
-        if self.show_pids {
-            options.push("-p/--show-pids");
-        }
-        if self.numeric_sort {
-            options.push("-n/--numeric-sort");
-        }
-        if !self.compact {
-            options.push("-c/--compact-not");
-        }
-        if self.show_parents {
-            options.push("-s/--show-parents");
-        }
-        if self.thread_names {
-            options.push("-t/--thread-names");
-        }
-        if !self.show_threads {
-            options.push("-T/--hide-threads");
-        }
-
         (!options.is_empty()).then(|| options.join(", "))
     }
 }
@@ -116,6 +97,9 @@ fn run() -> i32 {
             Some(options) => usage_error(CliError(format!(
                 "option(s) {options} are not supported yet"
             ))),
+            None if options.show_parents && options.selected_pid.is_none() => {
+                usage_error(CliError("--show-parents requires a PID".to_owned()))
+            }
             None => run_tree(options),
         },
     }
@@ -137,28 +121,40 @@ fn run_tree(options: CliOptions) -> i32 {
 
     #[cfg(windows)]
     {
-        let processes = match collect_processes() {
-            Ok(processes) => processes,
+        let snapshot = match collect_snapshot(options.thread_names) {
+            Ok(snapshot) => snapshot,
             Err(error) => {
                 eprintln!("pstree: failed to enumerate processes: {error}");
                 return 1;
             }
         };
 
-        let tree = ProcessTree::from_processes(processes);
+        let tree = ProcessTree::from_snapshot(snapshot);
         if tree.roots().is_empty() {
             eprintln!("pstree: no processes found");
             return 1;
         }
 
         let glyph_set = select_glyph_set(options.glyph_mode);
-        let output = match tree.render(options.selected_pid, glyph_set) {
-            Ok(output) => output,
-            Err(RenderError::ProcessNotFound(pid)) => {
-                eprintln!("pstree: process {pid} was not found");
-                return 1;
-            }
+        let render_options = RenderOptions {
+            show_pids: options.show_pids,
+            numeric_sort: options.numeric_sort,
+            compact: options.compact,
+            show_threads: options.show_threads,
+            show_parents: options.show_parents,
         };
+        let output =
+            match tree.render_with_options(options.selected_pid, glyph_set, &render_options) {
+                Ok(output) => output,
+                Err(RenderError::ProcessNotFound(pid)) => {
+                    eprintln!("pstree: process {pid} was not found");
+                    return 1;
+                }
+                Err(RenderError::ParentsRequirePid) => {
+                    eprintln!("pstree: --show-parents requires a PID");
+                    return 2;
+                }
+            };
 
         match write_output(&output) {
             Ok(()) => 0,
@@ -432,15 +428,9 @@ mod tests {
         assert!(!options.compact);
         assert!(options.show_parents);
         assert!(options.thread_names);
-        assert_eq!(
-            options.unsupported_options().as_deref(),
-            Some(
-                "-p/--show-pids, -n/--numeric-sort, -c/--compact-not, -s/--show-parents, -t/--thread-names"
-            )
-        );
+        assert!(options.unsupported_options().is_none());
 
         for option in [
-            "--highlight-all",
             "--show-pids",
             "--numeric-sort",
             "--compact-not",
@@ -452,7 +442,7 @@ mod tests {
             else {
                 panic!("expected a run command");
             };
-            assert!(options.unsupported_options().is_some(), "option: {option}");
+            assert!(options.unsupported_options().is_none(), "option: {option}");
         }
     }
 
