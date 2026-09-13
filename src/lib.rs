@@ -336,6 +336,11 @@ enum RenderEntry {
     Processes(Vec<u32>),
 }
 
+enum ChildItem {
+    Thread(ThreadInfo),
+    Process(u32),
+}
+
 impl ProcessTree {
     pub fn from_processes(processes: impl IntoIterator<Item = ProcessInfo>) -> Self {
         Self::from_snapshot(SystemSnapshot {
@@ -653,32 +658,100 @@ impl ProcessTree {
     }
 
     fn child_entries(&self, pid: u32, options: &RenderOptions) -> Vec<RenderEntry> {
-        let mut entries = Vec::new();
-
+        let mut children = Vec::new();
         if options.show_threads {
-            let threads = self.sorted_threads(pid, options);
-            let mut index = 0;
-            while index < threads.len() {
-                let thread = &threads[index];
-                let mut end = index + 1;
-                if options.compact && !options.show_pids {
-                    while end < threads.len()
-                        && self.thread_name(&threads[end]) == self.thread_name(thread)
-                    {
-                        end += 1;
+            children.extend(self.threads_of(pid).iter().cloned().map(ChildItem::Thread));
+        }
+        children.extend(
+            self.children_of(pid)
+                .iter()
+                .copied()
+                .map(ChildItem::Process),
+        );
+        children.sort_unstable_by(|left, right| self.compare_child_items(left, right, options));
+
+        let mut entries = Vec::new();
+        let mut index = 0;
+        while index < children.len() {
+            match &children[index] {
+                ChildItem::Thread(thread) => {
+                    let mut end = index + 1;
+                    if options.compact && !options.show_pids {
+                        while end < children.len()
+                            && matches!(&children[end], ChildItem::Thread(next)
+                                if self.thread_name(next) == self.thread_name(thread))
+                        {
+                            end += 1;
+                        }
                     }
+                    entries.push(RenderEntry::Threads(
+                        children[index..end]
+                            .iter()
+                            .filter_map(|child| match child {
+                                ChildItem::Thread(thread) => Some(thread.clone()),
+                                ChildItem::Process(_) => None,
+                            })
+                            .collect(),
+                    ));
+                    index = end;
                 }
-                entries.push(RenderEntry::Threads(threads[index..end].to_vec()));
-                index = end;
+                ChildItem::Process(pid) => {
+                    let signature = self.branch_signature(*pid, options, &mut BTreeSet::new());
+                    let mut end = index + 1;
+                    if options.compact && !options.show_pids {
+                        while end < children.len()
+                            && matches!(&children[end], ChildItem::Process(next)
+                                if self.branch_signature(*next, options, &mut BTreeSet::new())
+                                    == signature)
+                        {
+                            end += 1;
+                        }
+                    }
+                    entries.push(RenderEntry::Processes(
+                        children[index..end]
+                            .iter()
+                            .filter_map(|child| match child {
+                                ChildItem::Process(pid) => Some(*pid),
+                                ChildItem::Thread(_) => None,
+                            })
+                            .collect(),
+                    ));
+                    index = end;
+                }
             }
         }
-
-        entries.extend(
-            self.process_groups(self.sorted_children(pid, options), options)
-                .into_iter()
-                .map(RenderEntry::Processes),
-        );
         entries
+    }
+
+    fn compare_child_items(
+        &self,
+        left: &ChildItem,
+        right: &ChildItem,
+        options: &RenderOptions,
+    ) -> std::cmp::Ordering {
+        let left_id = match left {
+            ChildItem::Thread(thread) => thread.tid,
+            ChildItem::Process(pid) => *pid,
+        };
+        let right_id = match right {
+            ChildItem::Thread(thread) => thread.tid,
+            ChildItem::Process(pid) => *pid,
+        };
+
+        if options.numeric_sort {
+            return left_id.cmp(&right_id);
+        }
+
+        self.child_sort_name(left)
+            .cmp(&self.child_sort_name(right))
+            .then_with(|| left_id.cmp(&right_id))
+    }
+
+    fn child_sort_name(&self, child: &ChildItem) -> String {
+        match child {
+            ChildItem::Thread(thread) => format!("{{{}}}", self.thread_name(thread)),
+            ChildItem::Process(pid) => self.nodes[pid].name.clone(),
+        }
     }
 
     fn sorted_roots(&self, options: &RenderOptions) -> Vec<u32> {
@@ -1028,7 +1101,7 @@ mod tests {
                     ..RenderOptions::default()
                 }
             ),
-            "root---parent---selected-+-{selected}\n                         `-child\n"
+            "root---parent---selected-+-child\n                         `-{selected}\n"
         );
     }
 
@@ -1171,6 +1244,30 @@ mod tests {
                 }
             ),
             "root\n"
+        );
+    }
+
+    #[test]
+    fn threads_and_process_children_share_linux_sort_order() {
+        let tree = ProcessTree::from_snapshot(SystemSnapshot {
+            processes: vec![process(1, 0, "root"), process(40, 1, "worker")],
+            threads: vec![thread(20, 1, Some("Worker")), thread(30, 1, None)],
+        });
+
+        assert_eq!(
+            render(&tree, None, RenderOptions::default()),
+            "root-+-worker\n     |-{Worker}\n     `-{root}\n"
+        );
+        assert_eq!(
+            render(
+                &tree,
+                None,
+                RenderOptions {
+                    numeric_sort: true,
+                    ..RenderOptions::default()
+                }
+            ),
+            "root-+-{Worker}\n     |-{root}\n     `-worker\n"
         );
     }
 

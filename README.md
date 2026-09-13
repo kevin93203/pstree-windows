@@ -56,6 +56,8 @@ identical thread names are compacted like Linux `pstree`. `-t` queries full
 Windows thread descriptions; failed or unavailable descriptions fall back to
 the owning process name. With `-p`, named threads use `{Name}(n)`, and
 thread grouping is disabled so each TID remains visible.
+Threads and process children share one sibling list: default sorting compares
+their displayed names, while `-n` compares PID/TID numerically.
 
 Interactive Windows consoles use Unicode tree characters by default. Redirected
 output uses ASCII characters by default. Use `--ascii` or `--unicode` to force
